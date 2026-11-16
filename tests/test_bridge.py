@@ -110,3 +110,38 @@ def test_metadata_vision_response(monkeypatch):
     assert r.status_code == 200,r.text
     assert r.json()['title']=='Clouds drifting above trees'
     assert r.json()['keywords']==['clouds','trees','woodland','sky']
+
+
+def test_real_account_connect_verify_disconnect_with_mock_ftps(monkeypatch):
+    monkeypatch.setattr(server, 'FTP_TLS', FakeFTPS)
+    result = client.post('/api/account/connect', headers=HEADERS,
+                         json={'username': 'creator@example.com', 'password': 'test-secret'})
+    assert result.status_code == 200, result.text
+    assert result.json()['verified'] is True
+    assert result.json()['username_masked'] == 'c***@example.com'
+    assert result.json()['protocol'] == 'explicit FTPS'
+    assert ('login', 'creator@example.com') in FakeFTPS.records
+    assert ('prot_p',) in FakeFTPS.records
+    assert client.post('/api/account/verify', headers=HEADERS).json()['verified']
+    assert client.post('/api/account/disconnect', headers=HEADERS).json()['verified'] is False
+    assert server.FTP_USER == server.ENV_FTP_USER
+    assert server.FTP_PASS == server.ENV_FTP_PASS
+
+
+def test_account_api_requires_bridge_token():
+    assert client.post('/api/account/connect', json={
+        'username': 'creator@example.com', 'password': 'secret'}).status_code == 401
+    assert client.post('/api/account/verify').status_code == 401
+    assert client.post('/api/account/disconnect').status_code == 401
+
+
+def test_account_rejects_plaintext_downgrade(monkeypatch):
+    import ssl
+    def tls_failure(*args, **kwargs):
+        raise ssl.SSLError('mock failed handshake')
+    monkeypatch.setattr(server, 'FTP_TLS', tls_failure)
+    response = client.post('/api/account/connect', headers=HEADERS,
+                           json={'username': 'creator@example.com', 'password': 'secret'})
+    assert response.status_code == 502
+    assert 'insecure FTP fallback is disabled' in response.json()['detail']
+    assert 'secret' not in response.text
