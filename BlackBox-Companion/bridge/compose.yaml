@@ -1,0 +1,15 @@
+services:
+  blackbox-bridge:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8795:8795"
+    env_file: .env
+    volumes:
+      - blackbox-spool:/var/spool/blackbox
+    environment:
+      UPLOAD_SPOOL_DIR: /var/spool/blackbox
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  blackbox-spool:
