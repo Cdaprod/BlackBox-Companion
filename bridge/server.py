@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from ftplib import FTP_TLS
+from ftplib import FTP_TLS, error_perm
 from pathlib import Path
 from urllib.request import Request as URLRequest, urlopen
 from urllib.error import HTTPError
@@ -31,6 +31,9 @@ FTP_PORT = int(os.getenv('BLACKBOX_FTP_PORT', '21'))
 FTP_DIR = os.getenv('BLACKBOX_FTP_DIR', 'stock_footage')
 FTP_USER = os.getenv('BLACKBOX_FTP_USER', '')
 FTP_PASS = os.getenv('BLACKBOX_FTP_PASSWORD', '')
+ENV_FTP_USER = FTP_USER
+ENV_FTP_PASS = FTP_PASS
+verified_account = False
 AI_URL = os.getenv('AI_CHAT_COMPLETIONS_URL', 'https://api.openai.com/v1/chat/completions')
 AI_KEY = os.getenv('AI_API_KEY', '')
 AI_MODEL = os.getenv('AI_MODEL', 'gpt-4o-mini')
@@ -103,6 +106,103 @@ def ftps_transfer(job_id: str, path: Path, filename: str, size: int) -> None:
             except Exception:
                 ftp.close()
         path.unlink(missing_ok=True)
+
+
+
+class AccountInput(BaseModel):
+    username: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=512)
+
+
+def masked_account(user: str) -> str:
+    if '@' not in user:
+        return user[:1] + '***'
+    local, domain = user.rsplit('@', 1)
+    return local[:1] + '***@' + domain
+
+
+def ftps_check_credentials(user: str, password: str) -> None:
+    """Check real BlackBox credentials using explicit TLS, without uploading data."""
+    ftp = FTP_TLS(context=ssl.create_default_context(), timeout=25)
+    try:
+        ftp.connect(FTP_HOST, FTP_PORT)
+        ftp.login(user, password)
+        ftp.prot_p()
+        if FTP_DIR.strip('/'):
+            for segment in FTP_DIR.strip('/').split('/'):
+                ftp.cwd(segment)
+    finally:
+        try:
+            ftp.quit()
+        except Exception:
+            ftp.close()
+
+
+def sanitized_ftps_error(exc: Exception) -> str:
+    if isinstance(exc, ssl.SSLError):
+        return 'FTP TLS handshake failed; insecure FTP fallback is disabled'
+    if isinstance(exc, error_perm):
+        return 'FTP authentication refused or configured upload directory unavailable'
+    if isinstance(exc, (OSError, TimeoutError)):
+        return 'Cannot establish a secure FTP connection to the configured host'
+    return 'FTP verification failed (' + type(exc).__name__ + ')'
+
+
+def active_ftp_jobs() -> bool:
+    with lock:
+        return any(job['state'] in ('queued', 'transferring') for job in jobs.values())
+
+
+@app.post('/api/account/connect')
+async def account_connect(req: Request, body: AccountInput):
+    require_auth(req)
+    global FTP_USER, FTP_PASS, verified_account
+    if not FTP_HOST or not FTP_DIR:
+        raise HTTPException(503, 'FTP endpoint and remote directory must be configured on the bridge')
+    if active_ftp_jobs():
+        raise HTTPException(409, 'Wait for current FTP transfer jobs before changing credentials')
+    username = body.username.strip()
+    if not username or '\n' in username or '\r' in username:
+        raise HTTPException(422, 'Invalid FTP username')
+    try:
+        await asyncio.to_thread(ftps_check_credentials, username, body.password)
+    except Exception as exc:
+        raise HTTPException(502, sanitized_ftps_error(exc)) from None
+    if active_ftp_jobs():
+        raise HTTPException(409, 'FTP transfer started during verification; please retry')
+    FTP_USER = username
+    FTP_PASS = body.password
+    verified_account = True
+    return {'verified': True, 'protocol': 'explicit FTPS', 'host': FTP_HOST,
+            'username_masked': masked_account(username), 'remote_directory': FTP_DIR}
+
+
+@app.post('/api/account/verify')
+async def account_verify(req: Request):
+    require_auth(req)
+    global verified_account
+    if not ftp_ready():
+        raise HTTPException(503, 'Configure BlackBox credentials first')
+    try:
+        await asyncio.to_thread(ftps_check_credentials, FTP_USER, FTP_PASS)
+    except Exception as exc:
+        verified_account = False
+        raise HTTPException(502, sanitized_ftps_error(exc)) from None
+    verified_account = True
+    return {'verified': True, 'protocol': 'explicit FTPS', 'host': FTP_HOST,
+            'username_masked': masked_account(FTP_USER), 'remote_directory': FTP_DIR}
+
+
+@app.post('/api/account/disconnect')
+async def account_disconnect(req: Request):
+    require_auth(req)
+    global FTP_USER, FTP_PASS, verified_account
+    if active_ftp_jobs():
+        raise HTTPException(409, 'Cannot disconnect during active FTP transfers')
+    FTP_USER, FTP_PASS = ENV_FTP_USER, ENV_FTP_PASS
+    verified_account = False
+    return {'verified': False,
+            'message': 'Temporary credentials cleared. Environment defaults remain; this does not log out of the BlackBox website.'}
 
 
 class AnalyzeInput(BaseModel):
