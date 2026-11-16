@@ -6,9 +6,19 @@
 
 ![Responsive phone layout](dashboard-preview-mobile.png)
 
-**Version:** 0.1.0 (2026-11-16)  
+**Version:** 0.2.0 (2026-11-16)  
 **Purpose:** One offline-capable HTML dashboard to carry between devices; optional self-hosted secure HTTP-to-FTPS and video-vision AI bridge.  
 **Status:** Functional independent prototype with automated tests. **Not** connected to or endorsed by BlackBox Global.
+
+## Real BlackBox account access (v0.2.0)
+
+In **My BlackBox**, **Sign in to BlackBox** opens the official `https://portal.blackbox.global/login` page. Website login, earnings, and clip approval statuses remain under BlackBox's control and cannot be read through a private website session by this independent HTML client.
+
+The separate **Verify & connect BlackBox FTP** form sends your email and password over HTTPS to **your own** authenticated bridge, which performs a real read-only explicit-FTPS login and checks access to the configured upload directory. The temporary credentials are held only in the bridge server's process memory (until disconnected or restarted), and are never written into the HTML file or JSON workspace export. The bridge token is required for every account endpoint. **Verify configured account** re-checks stored FTP credentials; **Disconnect temporary FTP login** restores any environment-provided FTP defaults, if configured.
+
+Only use this interface with a bridge you own. Because it is a single-user bridge, anyone possessing its token can use FTP credentials while they are configured. Do not expose this token, password, or an unprotected bridge publicly. The app requires a live bridge; an HTML file alone cannot establish an FTP login. FTPS must support explicit TLS; insecure plaintext FTP fallback is intentionally not supported.
+
+**Testing:** Account login tests use a mocked FTPS service. No real BlackBox credentials have been tested or submitted; BlackBox may reject explicit TLS or require different server settings.
 
 ## Deliverable inventory
 
@@ -82,6 +92,7 @@ Legacy BlackBox documentation distinguishes standard footage at `stock_footage` 
 - A restarted bridge loses in-memory **FTPS job statuses**. Partially sent *HTTP chunks* can be recovered by their server-side session ID if the client preserved it. Finished job status isn't permanently archived.
 - Stale incomplete uploads occupy local spool storage until manually cleaned; provision sufficient space and periodically inspect its spool volume.
 - Browser tokens live only in sessionStorage when the browser supports it; use a secret manager/OS password manager for durable storage. Do not distribute a file with tokens added by hand.
+- The website login and FTPS login are independent. Portal earnings, status, and metadata submission are not synchronized.
 - This prototype does not automatically create collaborative BlackBox projects, attach release documents, retrieve sales/account data, or programmatically import the metadata CSV into BlackBox.
 
 ## Tests
